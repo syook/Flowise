@@ -2,10 +2,14 @@ version: '3.1'
 
 services:
     flowise:
-        image: flowiseai/flowise
+        build:
+          context: ..
+          dockerfile: docker/dev.Dockerfile
+        image: flowise-dev
         restart: always
         environment:
-            - PORT=${PORT}
+            - PORT=${PORT:-3000}
+            - NODE_ENV=development
             - CORS_ORIGINS=${CORS_ORIGINS}
             - IFRAME_ORIGINS=${IFRAME_ORIGINS}
             - FLOWISE_USERNAME=${FLOWISE_USERNAME}
@@ -48,13 +52,13 @@ services:
             - REDIS_KEY=${REDIS_KEY}
             - REDIS_CA=${REDIS_CA}
         ports:
-            - '${PORT}:${PORT}'
+            - '${PORT:-3000}:${PORT:-3000}'
         healthcheck:
-          test: ["CMD", "curl", "-f", "http://localhost:${PORT}/api/v1/ping"]
+          test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/v1/ping"]
           interval: 10s
           timeout: 5s
           retries: 5
           start_period: 30s
         volumes:
             - ~/.flowise:/root/.flowise
-        entrypoint: /bin/sh -c "sleep 3; flowise start"
+        entrypoint: /bin/sh -c "sleep 3; node packages/server/dist/index.js"
