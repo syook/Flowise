@@ -40,11 +40,6 @@ WORKDIR /app
 # Copy the built application from the build stage
 COPY --from=build /app /app
 
-# Expose default port
-EXPOSE 3000
+EXPOSE 3000-9000
 
-# Set environment variables
-ENV PORT=3000
-
-# Start the application using the local build
-ENTRYPOINT ["node", "packages/server/dist/index.js"]
+CMD [ "pnpm", "start" ]

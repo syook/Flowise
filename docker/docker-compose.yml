@@ -1,21 +1,21 @@
-version: '3.1'
-
 services:
     flowise:
         build:
           context: ..
           dockerfile: docker/dev.Dockerfile
         image: flowise-dev
-        restart: always
+        restart: "no"  # Changed to "no" for better debugging
         environment:
-            - PORT=${PORT:-3000}
+            - PORT=${PORT}
+            - NODE_OPTIONS=--trace-warnings
             - NODE_ENV=development
+            # Reduce verbose logging for clearer debugging
+            - DEBUG=${DEBUG}
             - CORS_ORIGINS=${CORS_ORIGINS}
             - IFRAME_ORIGINS=${IFRAME_ORIGINS}
             - FLOWISE_USERNAME=${FLOWISE_USERNAME}
             - FLOWISE_PASSWORD=${FLOWISE_PASSWORD}
             - FLOWISE_FILE_SIZE_LIMIT=${FLOWISE_FILE_SIZE_LIMIT}
-            - DEBUG=${DEBUG}
             - DATABASE_PATH=${DATABASE_PATH}
             - DATABASE_TYPE=${DATABASE_TYPE}
             - DATABASE_PORT=${DATABASE_PORT}
@@ -53,12 +53,17 @@ services:
             - REDIS_CA=${REDIS_CA}
         ports:
             - '${PORT:-3000}:${PORT:-3000}'
+            - '9229:9229'  # Adding inspect port for Node.js debugging
         healthcheck:
           test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/v1/ping"]
-          interval: 10s
-          timeout: 5s
-          retries: 5
-          start_period: 30s
+          interval: 30s  # Increased interval
+          timeout: 10s   # Increased timeout
+          retries: 3
+          start_period: 60s  # Increased start period to allow for initialization
         volumes:
+            - ..:/app
             - ~/.flowise:/root/.flowise
-        entrypoint: /bin/sh -c "sleep 3; node packages/server/dist/index.js"
+            - /app/node_modules
+            - /app/packages/*/node_modules
+        tty: true  # Add this to keep container running even if the process exits
+        stdin_open: true

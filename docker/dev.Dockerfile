@@ -24,22 +24,17 @@ RUN pnpm install --recursive --no-strict-peer-dependencies --shamefully-hoist
 # Copy the rest of the application code
 COPY . .
 
-# Build the application
-RUN pnpm build
+# Build the packages in the correct order
+RUN pnpm --filter flowise-components build
+RUN pnpm --filter flowise-server build
+RUN pnpm --filter flowise-ui build
 
-# Expose the default port
-EXPOSE 3000
+EXPOSE 3000-9000
 
 # Default environment variables
-ENV PORT=3000
 ENV NODE_ENV=development
 
-# Install nodemon and concurrently for development workflow
-RUN npm install -g nodemon concurrently
+# Use bash for better debugging
+RUN apk add --no-cache bash
 
-# Create a start script to watch for component changes
-COPY ./docker/dev-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/dev-entrypoint.sh
-
-# Use the custom entrypoint script
-ENTRYPOINT ["dev-entrypoint.sh"]
+CMD [ "pnpm", "start" ]
