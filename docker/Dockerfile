@@ -35,14 +35,16 @@ RUN apk add --no-cache libc6-compat python3 make g++ git py3-pip curl chromium b
 # Set the environment variable for Puppeteer to find Chromium
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-COPY --from=build /usr/local/lib/node_modules /usr/local/lib/node_modules
-COPY --from=build /usr/local/bin /usr/local/bin
-
 WORKDIR /usr/src
 
 # Copy the built application from the build stage
 COPY --from=build /usr/src /usr/src
 
+# Install the local packages globally so they're in the PATH
+# This will make "flowise" point to your local code
+RUN cd /usr/src && npm install -g ./packages/server
+
 EXPOSE 3000-9000
 
-CMD [ "pnpm", "start" ]
+# Now "flowise start" will use your locally built version
+ENTRYPOINT ["flowise", "start"]

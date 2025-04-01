@@ -62,5 +62,6 @@ services:
           start_period: 60s  # Increased start period to allow for initialization
         volumes:
             - ~/.flowise:/root/.flowise
+        entrypoint: /bin/sh -c "sleep 3; flowise start"
         tty: true  # Add this to keep container running even if the process exits
         stdin_open: true
