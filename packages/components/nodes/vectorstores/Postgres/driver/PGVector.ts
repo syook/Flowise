@@ -107,12 +107,15 @@ export class PGVectorDriver extends VectorStoreDriver {
                 )
             }
 
-            // Run base function
-            const queryResult = await basePoolQueryFn(queryString, parameters)
-
-            // ensure connection is released
-            instance.client.release()
-            instance.client = undefined
+            let queryResult
+            try {
+                // Run base function
+                queryResult = await basePoolQueryFn(queryString, parameters)
+            } finally {
+                // ensure connection is released
+                instance.client.release()
+                instance.client = undefined
+            }
 
             return queryResult
         }

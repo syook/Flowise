@@ -2,7 +2,7 @@ services:
     flowise:
         build:
           context: ..
-          dockerfile: docker/dev.Dockerfile
+          dockerfile: docker/Dockerfile
         image: flowise-dev
         restart: "no"  # Changed to "no" for better debugging
         environment:
@@ -61,9 +61,6 @@ services:
           retries: 3
           start_period: 60s  # Increased start period to allow for initialization
         volumes:
-            - ..:/app
             - ~/.flowise:/root/.flowise
-            - /app/node_modules
-            - /app/packages/*/node_modules
         tty: true  # Add this to keep container running even if the process exits
         stdin_open: true

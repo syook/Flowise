@@ -2,7 +2,10 @@
 FROM node:20-alpine AS build
 
 USER root
-WORKDIR /app
+WORKDIR /usr/src
+
+# Skip downloading Chrome for Puppeteer (saves build time)
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # Install pnpm globally
 RUN npm install -g pnpm
@@ -20,9 +23,6 @@ RUN pnpm install --recursive --no-strict-peer-dependencies --shamefully-hoist
 # Copy the rest of the application code
 COPY . .
 
-# (Optional) Ensure UI package dependencies are installed
-RUN cd packages/ui && pnpm install
-
 # Build all packages via turbo
 RUN pnpm build
 
@@ -30,15 +30,18 @@ RUN pnpm build
 FROM node:20-alpine
 
 # Install runtime dependencies
-RUN apk add --no-cache chromium git python3 py3-pip make g++ build-base cairo-dev pango-dev curl
+RUN apk add --no-cache libc6-compat python3 make g++ git py3-pip curl chromium build-base cairo-dev pango-dev
 
 # Set the environment variable for Puppeteer to find Chromium
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-WORKDIR /app
+COPY --from=build /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=build /usr/local/bin /usr/local/bin
+
+WORKDIR /usr/src
 
 # Copy the built application from the build stage
-COPY --from=build /app /app
+COPY --from=build /usr/src /usr/src
 
 EXPOSE 3000-9000
 
