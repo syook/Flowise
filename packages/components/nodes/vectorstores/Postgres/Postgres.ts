@@ -7,10 +7,30 @@ import { howToUseFileUpload } from '../VectorStoreUtils'
 import { VectorStore } from '@langchain/core/vectorstores'
 import { VectorStoreDriver } from './driver/Base'
 import { TypeORMDriver } from './driver/TypeORM'
-// import { PGVectorDriver } from './driver/PGVector'
+import { PGVectorDriver } from './driver/PGVector'
 import { getContentColumnName, getDatabase, getHost, getPort, getTableName } from './utils'
 
 const serverCredentialsExists = !!process.env.POSTGRES_VECTORSTORE_USER && !!process.env.POSTGRES_VECTORSTORE_PASSWORD
+
+// added temporarily to fix the base class return for VectorStore when postgres node is using TypeORM
+function getVectorStoreBaseClasses() {
+    // Try getting base classes through the utility function
+    const baseClasses = getBaseClasses(VectorStore)
+
+    // If we got results, return them
+    if (baseClasses && baseClasses.length > 0) {
+        return baseClasses
+    }
+
+    // If VectorStore is recognized as a class but getBaseClasses returned nothing,
+    // return the known inheritance chain
+    if (VectorStore instanceof Function) {
+        return ['VectorStore']
+    }
+
+    // Fallback to minimum required class
+    return ['VectorStore']
+}
 
 class Postgres_VectorStores implements INode {
     label: string
@@ -99,7 +119,7 @@ class Postgres_VectorStores implements INode {
                 additionalParams: true,
                 optional: true
             },
-            /*{
+            {
                 label: 'Driver',
                 name: 'driver',
                 type: 'options',
@@ -117,7 +137,7 @@ class Postgres_VectorStores implements INode {
                 ],
                 optional: true,
                 additionalParams: true
-            },*/
+            },
             {
                 label: 'Distance Strategy',
                 name: 'distanceStrategy',
@@ -195,7 +215,7 @@ class Postgres_VectorStores implements INode {
             {
                 label: 'Postgres Vector Store',
                 name: 'vectorStore',
-                baseClasses: [this.type, ...getBaseClasses(VectorStore)]
+                baseClasses: [this.type, ...getVectorStoreBaseClasses()]
             }
         ]
     }
@@ -308,15 +328,14 @@ class Postgres_VectorStores implements INode {
     }
 
     static getDriverFromConfig(nodeData: INodeData, options: ICommonObject): VectorStoreDriver {
-        /*switch (nodeData.inputs?.driver) {
+        switch (nodeData.inputs?.driver) {
             case 'typeorm':
                 return new TypeORMDriver(nodeData, options)
             case 'pgvector':
                 return new PGVectorDriver(nodeData, options)
             default:
                 return new TypeORMDriver(nodeData, options)
-        }*/
-        return new TypeORMDriver(nodeData, options)
+        }
     }
 }
 

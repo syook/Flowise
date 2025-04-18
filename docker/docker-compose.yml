@@ -1,17 +1,21 @@
-version: '3.1'
-
 services:
     flowise:
-        image: flowiseai/flowise
-        restart: always
+        build:
+          context: ..
+          dockerfile: docker/Dockerfile
+        image: flowise-dev
+        restart: "no"  # Changed to "no" for better debugging
         environment:
             - PORT=${PORT}
+            - NODE_OPTIONS=--trace-warnings
+            - NODE_ENV=development
+            # Reduce verbose logging for clearer debugging
+            - DEBUG=${DEBUG}
             - CORS_ORIGINS=${CORS_ORIGINS}
             - IFRAME_ORIGINS=${IFRAME_ORIGINS}
             - FLOWISE_USERNAME=${FLOWISE_USERNAME}
             - FLOWISE_PASSWORD=${FLOWISE_PASSWORD}
             - FLOWISE_FILE_SIZE_LIMIT=${FLOWISE_FILE_SIZE_LIMIT}
-            - DEBUG=${DEBUG}
             - DATABASE_PATH=${DATABASE_PATH}
             - DATABASE_TYPE=${DATABASE_TYPE}
             - DATABASE_PORT=${DATABASE_PORT}
@@ -38,6 +42,8 @@ services:
             - WORKER_CONCURRENCY=${WORKER_CONCURRENCY}
             - QUEUE_NAME=${QUEUE_NAME}
             - QUEUE_REDIS_EVENT_STREAM_MAX_LEN=${QUEUE_REDIS_EVENT_STREAM_MAX_LEN}
+            - REMOVE_ON_AGE=${REMOVE_ON_AGE}
+            - REMOVE_ON_COUNT=${REMOVE_ON_COUNT}
             - REDIS_URL=${REDIS_URL}
             - REDIS_HOST=${REDIS_HOST}
             - REDIS_PORT=${REDIS_PORT}
@@ -48,13 +54,16 @@ services:
             - REDIS_KEY=${REDIS_KEY}
             - REDIS_CA=${REDIS_CA}
         ports:
-            - '${PORT}:${PORT}'
+            - '${PORT:-3000}:${PORT:-3000}'
+            - '9229:9229'  # Adding inspect port for Node.js debugging
         healthcheck:
-          test: ["CMD", "curl", "-f", "http://localhost:${PORT}/api/v1/ping"]
-          interval: 10s
-          timeout: 5s
-          retries: 5
-          start_period: 30s
+          test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}/api/v1/ping"]
+          interval: 30s  # Increased interval
+          timeout: 10s   # Increased timeout
+          retries: 3
+          start_period: 60s  # Increased start period to allow for initialization
         volumes:
             - ~/.flowise:/root/.flowise
         entrypoint: /bin/sh -c "sleep 3; flowise start"
+        tty: true  # Add this to keep container running even if the process exits
+        stdin_open: true
