@@ -53,10 +53,29 @@ export class MCPToolkit extends BaseToolkit {
 
             const baseUrl = new URL(this.serverParams.url)
             try {
-                transport = new StreamableHTTPClientTransport(baseUrl)
+                if (this.serverParams.headers) {
+                    transport = new StreamableHTTPClientTransport(baseUrl, {
+                        requestInit: {
+                            headers: this.serverParams.headers
+                        }
+                    })
+                } else {
+                    transport = new StreamableHTTPClientTransport(baseUrl)
+                }
                 await client.connect(transport)
             } catch (error) {
-                transport = new SSEClientTransport(baseUrl)
+                if (this.serverParams.headers) {
+                    transport = new SSEClientTransport(baseUrl, {
+                        requestInit: {
+                            headers: this.serverParams.headers
+                        },
+                        eventSourceInit: {
+                            fetch: (url, init) => fetch(url, { ...init, headers: this.serverParams.headers })
+                        }
+                    })
+                } else {
+                    transport = new SSEClientTransport(baseUrl)
+                }
                 await client.connect(transport)
             }
         }
@@ -92,7 +111,13 @@ export class MCPToolkit extends BaseToolkit {
                 argsSchema: createSchemaModel(tool.inputSchema)
             })
         })
-        return Promise.all(toolsPromises)
+        const res = await Promise.allSettled(toolsPromises)
+        const errors = res.filter((r) => r.status === 'rejected')
+        if (errors.length !== 0) {
+            console.error('MCP Tools falied to be resolved', errors)
+        }
+        const successes = res.filter((r) => r.status === 'fulfilled').map((r) => r.value)
+        return successes
     }
 }
 
@@ -113,7 +138,7 @@ export async function MCPTool({
             const client = await toolkit.createClient()
 
             try {
-                const req: CallToolRequest = { method: 'tools/call', params: { name: name, arguments: input } }
+                const req: CallToolRequest = { method: 'tools/call', params: { name: name, arguments: input as any } }
                 const res = await client.request(req, CallToolResultSchema)
                 const content = res.content
                 const contentString = JSON.stringify(content)

@@ -1,5 +1,5 @@
 import { BaseCache } from '@langchain/core/caches'
-import { ChatVertexAI as LcChatVertexAI, ChatVertexAIInput } from '@langchain/google-vertexai'
+import { ChatVertexAIInput, ChatVertexAI as LcChatVertexAI } from '@langchain/google-vertexai'
 import {
     ICommonObject,
     IMultiModalOption,
@@ -9,8 +9,8 @@ import {
     INodeParams,
     IVisionChatModal
 } from '../../../src/Interface'
+import { getModels, getRegions, MODEL_TYPE } from '../../../src/modelLoader'
 import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
-import { getModels, MODEL_TYPE } from '../../../src/modelLoader'
 
 const DEFAULT_IMAGE_MAX_TOKEN = 8192
 const DEFAULT_IMAGE_MODEL = 'gemini-1.5-flash-latest'
@@ -65,7 +65,7 @@ class GoogleVertexAI_ChatModels implements INode {
     constructor() {
         this.label = 'ChatGoogleVertexAI'
         this.name = 'chatGoogleVertexAI'
-        this.version = 5.1
+        this.version = 5.3
         this.type = 'ChatGoogleVertexAI'
         this.icon = 'GoogleVertex.svg'
         this.category = 'Chat Models'
@@ -88,6 +88,14 @@ class GoogleVertexAI_ChatModels implements INode {
                 optional: true
             },
             {
+                label: 'Region',
+                description: 'Region to use for the model.',
+                name: 'region',
+                type: 'asyncOptions',
+                loadMethod: 'listRegions',
+                optional: true
+            },
+            {
                 label: 'Model Name',
                 name: 'modelName',
                 type: 'asyncOptions',
@@ -99,7 +107,8 @@ class GoogleVertexAI_ChatModels implements INode {
                 type: 'string',
                 placeholder: 'gemini-1.5-pro-exp-0801',
                 description: 'Custom model name to use. If provided, it will override the model selected',
-                additionalParams: true
+                additionalParams: true,
+                optional: true
             },
             {
                 label: 'Temperature',
@@ -150,6 +159,16 @@ class GoogleVertexAI_ChatModels implements INode {
                 step: 1,
                 optional: true,
                 additionalParams: true
+            },
+            {
+                label: 'Thinking Budget',
+                name: 'thinkingBudget',
+                type: 'number',
+                description: 'Number of tokens to use for thinking process (0 to disable)',
+                step: 1,
+                placeholder: '1024',
+                optional: true,
+                additionalParams: true
             }
         ]
     }
@@ -158,6 +177,9 @@ class GoogleVertexAI_ChatModels implements INode {
     loadMethods = {
         async listModels(): Promise<INodeOptionsValue[]> {
             return await getModels(MODEL_TYPE.CHAT, 'chatGoogleVertexAI')
+        },
+        async listRegions(): Promise<INodeOptionsValue[]> {
+            return await getRegions(MODEL_TYPE.CHAT, 'chatGoogleVertexAI')
         }
     }
 
@@ -191,6 +213,8 @@ class GoogleVertexAI_ChatModels implements INode {
         const cache = nodeData.inputs?.cache as BaseCache
         const topK = nodeData.inputs?.topK as string
         const streaming = nodeData.inputs?.streaming as boolean
+        const thinkingBudget = nodeData.inputs?.thinkingBudget as string
+        const region = nodeData.inputs?.region as string
 
         const allowImageUploads = nodeData.inputs?.allowImageUploads as boolean
 
@@ -210,6 +234,8 @@ class GoogleVertexAI_ChatModels implements INode {
         if (topP) obj.topP = parseFloat(topP)
         if (cache) obj.cache = cache
         if (topK) obj.topK = parseFloat(topK)
+        if (thinkingBudget) obj.thinkingBudget = parseInt(thinkingBudget, 10)
+        if (region) obj.location = region
 
         const model = new ChatVertexAI(nodeData.id, obj)
         model.setMultiModalOption(multiModalOption)

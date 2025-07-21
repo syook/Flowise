@@ -127,7 +127,8 @@ class ExecuteFlow_Agentflow implements INode {
                 return returnData
             }
 
-            const chatflows = await appDataSource.getRepository(databaseEntities['ChatFlow']).find()
+            const searchOptions = options.searchOptions || {}
+            const chatflows = await appDataSource.getRepository(databaseEntities['ChatFlow']).findBy(searchOptions)
 
             for (let i = 0; i < chatflows.length; i += 1) {
                 let cfType = 'Chatflow'
@@ -180,7 +181,8 @@ class ExecuteFlow_Agentflow implements INode {
             if (selectedFlowId === options.chatflowid) throw new Error('Cannot call the same agentflow!')
 
             let headers: Record<string, string> = {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'flowise-tool': 'true'
             }
             if (chatflowApiKey) headers = { ...headers, Authorization: `Bearer ${chatflowApiKey}` }
 
