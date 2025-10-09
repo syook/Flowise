@@ -69,6 +69,7 @@ export const QUESTION_VAR_PREFIX = 'question'
 export const FILE_ATTACHMENT_PREFIX = 'file_attachment'
 export const CHAT_HISTORY_VAR_PREFIX = 'chat_history'
 export const RUNTIME_MESSAGES_LENGTH_VAR_PREFIX = 'runtime_messages_length'
+export const LOOP_COUNT_VAR_PREFIX = 'loop_count'
 export const CURRENT_DATE_TIME_VAR_PREFIX = 'current_date_time'
 export const REDACTED_CREDENTIAL_VALUE = '_FLOWISE_BLANK_07167752-1a71-43b1-bf8f-4f32252165db'
 
@@ -1378,11 +1379,10 @@ export const findAvailableConfigs = (reactFlowNodes: IReactFlowNode[], component
                 }
                 continue
             } else if (inputParam.type === 'array') {
-                // get array item schema
                 const arrayItem = inputParam.array
                 if (Array.isArray(arrayItem)) {
-                    const arraySchema = []
-                    // Each array item is a field definition
+                    const arrayItemSchema: Record<string, string> = {}
+                    // Build object schema representing the structure of each array item
                     for (const item of arrayItem) {
                         let itemType = item.type
                         if (itemType === 'options') {
@@ -1391,10 +1391,7 @@ export const findAvailableConfigs = (reactFlowNodes: IReactFlowNode[], component
                         } else if (itemType === 'file') {
                             itemType = item.fileType ?? item.type
                         }
-                        arraySchema.push({
-                            name: item.name,
-                            type: itemType
-                        })
+                        arrayItemSchema[item.name] = itemType
                     }
                     obj = {
                         node: flowNode.data.label,
@@ -1402,7 +1399,7 @@ export const findAvailableConfigs = (reactFlowNodes: IReactFlowNode[], component
                         label: inputParam.label,
                         name: inputParam.name,
                         type: inputParam.type,
-                        schema: arraySchema
+                        schema: arrayItemSchema
                     }
                 }
             } else if (inputParam.loadConfig) {
@@ -1494,7 +1491,9 @@ export const isFlowValidForStream = (reactFlowNodes: IReactFlowNode[], endingNod
             'chatTogetherAI',
             'chatTogetherAI_LlamaIndex',
             'chatFireworks',
-            'chatBaiduWenxin'
+            'ChatSambanova',
+            'chatBaiduWenxin',
+            'chatCometAPI'
         ],
         LLMs: ['azureOpenAI', 'openAI', 'ollama']
     }

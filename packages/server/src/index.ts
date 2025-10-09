@@ -163,7 +163,19 @@ export class App {
         this.app.use(express.urlencoded({ limit: flowise_file_size_limit, extended: true }))
 
         // Enhanced trust proxy settings for load balancer
-        this.app.set('trust proxy', true) // Trust all proxies
+        let trustProxy: string | boolean | number | undefined = process.env.TRUST_PROXY
+        if (typeof trustProxy === 'undefined' || trustProxy.trim() === '' || trustProxy === 'true') {
+            // Default to trust all proxies
+            trustProxy = true
+        } else if (trustProxy === 'false') {
+            // Disable trust proxy
+            trustProxy = false
+        } else if (!isNaN(Number(trustProxy))) {
+            // Number: Trust specific number of proxies
+            trustProxy = Number(trustProxy)
+        }
+
+        this.app.set('trust proxy', trustProxy)
 
         // Allow access from specified domains
         this.app.use(cors(getCorsOptions()))
@@ -197,7 +209,8 @@ export class App {
             if (next) next()
         })
 
-        const whitelistURLs = WHITELIST_URLS
+        const denylistURLs = process.env.DENYLIST_URLS ? process.env.DENYLIST_URLS.split(',') : []
+        const whitelistURLs = WHITELIST_URLS.filter((url) => !denylistURLs.includes(url))
         const URL_CASE_INSENSITIVE_REGEX: RegExp = /\/api\/v1\//i
         const URL_CASE_SENSITIVE_REGEX: RegExp = /\/api\/v1\//
 

@@ -43,7 +43,8 @@ import {
     QUESTION_VAR_PREFIX,
     CURRENT_DATE_TIME_VAR_PREFIX,
     _removeCredentialId,
-    validateHistorySchema
+    validateHistorySchema,
+    LOOP_COUNT_VAR_PREFIX
 } from '.'
 import { ChatFlow } from '../database/entities/ChatFlow'
 import { Variable } from '../database/entities/Variable'
@@ -57,6 +58,7 @@ import { ChatMessage } from '../database/entities/ChatMessage'
 import { Telemetry } from './telemetry'
 import { getWorkspaceSearchOptions } from '../enterprise/utils/ControllerServiceUtils'
 import { UsageCacheManager } from '../UsageCacheManager'
+import { generateTTSForResponseStream, shouldAutoPlayTTS } from './buildChatflow'
 
 interface IWaitingNode {
     nodeId: string
@@ -84,6 +86,8 @@ interface IProcessNodeOutputsParams {
     waitingNodes: Map<string, IWaitingNode>
     loopCounts: Map<string, number>
     abortController?: AbortController
+    sseStreamer?: IServerSideEventStreamer
+    chatId: string
 }
 
 interface IAgentFlowRuntime {
@@ -130,9 +134,11 @@ interface IExecuteNodeParams {
     parentExecutionId?: string
     isRecursive?: boolean
     iterationContext?: ICommonObject
+    loopCounts?: Map<string, number>
     orgId: string
     workspaceId: string
     subscriptionId: string
+    productId: string
 }
 
 interface IExecuteAgentFlowParams extends Omit<IExecuteFlowParams, 'incomingInput'> {
@@ -215,8 +221,10 @@ export const resolveVariables = async (
     variableOverrides: IVariableOverride[],
     uploadedFilesContent: string,
     chatHistory: IMessage[],
+    componentNodes: IComponentNodes,
     agentFlowExecutedData?: IAgentflowExecutedData[],
-    iterationContext?: ICommonObject
+    iterationContext?: ICommonObject,
+    loopCounts?: Map<string, number>
 ): Promise<INodeData> => {
     let flowNodeData = cloneDeep(reactFlowNodeData)
     const types = 'inputs'
@@ -281,6 +289,20 @@ export const resolveVariables = async (
 
             if (variableFullPath === RUNTIME_MESSAGES_LENGTH_VAR_PREFIX) {
                 resolvedValue = resolvedValue.replace(match, flowConfig?.runtimeChatHistoryLength ?? 0)
+            }
+
+            if (variableFullPath === LOOP_COUNT_VAR_PREFIX) {
+                // Get the current loop count from the most recent loopAgentflow node execution
+                let currentLoopCount = 0
+                if (loopCounts && agentFlowExecutedData) {
+                    // Find the most recent loopAgentflow node execution to get its loop count
+                    const loopNodes = [...agentFlowExecutedData].reverse().filter((data) => data.data?.name === 'loopAgentflow')
+                    if (loopNodes.length > 0) {
+                        const latestLoopNode = loopNodes[0]
+                        currentLoopCount = loopCounts.get(latestLoopNode.nodeId) || 0
+                    }
+                }
+                resolvedValue = resolvedValue.replace(match, currentLoopCount.toString())
             }
 
             if (variableFullPath === CURRENT_DATE_TIME_VAR_PREFIX) {
@@ -351,8 +373,14 @@ export const resolveVariables = async (
                         const formattedValue =
                             Array.isArray(variableValue) || (typeof variableValue === 'object' && variableValue !== null)
                                 ? JSON.stringify(variableValue)
-                                : String(variableValue)
-                        resolvedValue = resolvedValue.replace(match, formattedValue)
+                                : variableValue
+                        // If the resolved value is exactly the match, replace it directly
+                        if (resolvedValue === match) {
+                            resolvedValue = formattedValue
+                        } else {
+                            // Otherwise do a standard string‐replace
+                            resolvedValue = String(resolvedValue).replace(match, String(formattedValue))
+                        }
                         // Skip fallback logic
                         continue
                     }
@@ -383,6 +411,135 @@ export const resolveVariables = async (
     }
 
     const getParamValues = async (paramsObj: ICommonObject) => {
+        /*
+         * EXAMPLE SCENARIO:
+         *
+         * 1. Agent node has inputParam: { name: "agentTools", type: "array", array: [{ name: "agentSelectedTool", loadConfig: true }] }
+         * 2. Inputs contain: { agentTools: [{ agentSelectedTool: "requestsGet", agentSelectedToolConfig: { requestsGetHeaders: "Bearer {{ $vars.TOKEN }}" } }] }
+         * 3. We need to resolve the variable in requestsGetHeaders because RequestsGet node defines requestsGetHeaders with acceptVariable: true
+         *
+         * STEP 1: Find all parameters with loadConfig=true (e.g., "agentSelectedTool")
+         * STEP 2: Find their values in inputs (e.g., "requestsGet")
+         * STEP 3: Look up component node definition for "requestsGet"
+         * STEP 4: Find which of its parameters have acceptVariable=true (e.g., "requestsGetHeaders")
+         * STEP 5: Find the config object (e.g., "agentSelectedToolConfig")
+         * STEP 6: Resolve variables in config parameters that accept variables
+         */
+
+        // Helper function to find params with loadConfig recursively
+        // Example: Finds ["agentModel", "agentSelectedTool"] from the inputParams structure
+        const findParamsWithLoadConfig = (inputParams: any[]): string[] => {
+            const paramsWithLoadConfig: string[] = []
+
+            for (const param of inputParams) {
+                // Direct loadConfig param (e.g., agentModel with loadConfig: true)
+                if (param.loadConfig === true) {
+                    paramsWithLoadConfig.push(param.name)
+                }
+
+                // Check nested array parameters (e.g., agentTools.array contains agentSelectedTool with loadConfig: true)
+                if (param.type === 'array' && param.array && Array.isArray(param.array)) {
+                    const nestedParams = findParamsWithLoadConfig(param.array)
+                    paramsWithLoadConfig.push(...nestedParams)
+                }
+            }
+
+            return paramsWithLoadConfig
+        }
+
+        // Helper function to find value of a parameter recursively in nested objects/arrays
+        // Example: Searches for "agentSelectedTool" value in complex nested inputs structure
+        // Returns "requestsGet" when found in agentTools[0].agentSelectedTool
+        const findParamValue = (obj: any, paramName: string): any => {
+            if (typeof obj !== 'object' || obj === null) {
+                return undefined
+            }
+
+            // Handle arrays (e.g., agentTools array)
+            if (Array.isArray(obj)) {
+                for (const item of obj) {
+                    const result = findParamValue(item, paramName)
+                    if (result !== undefined) {
+                        return result
+                    }
+                }
+                return undefined
+            }
+
+            // Direct property match
+            if (Object.prototype.hasOwnProperty.call(obj, paramName)) {
+                return obj[paramName]
+            }
+
+            // Recursively search nested objects
+            for (const value of Object.values(obj)) {
+                const result = findParamValue(value, paramName)
+                if (result !== undefined) {
+                    return result
+                }
+            }
+
+            return undefined
+        }
+
+        // Helper function to process config parameters with acceptVariable
+        // Example: Processes agentSelectedToolConfig object, resolving variables in requestsGetHeaders
+        const processConfigParams = async (configObj: any, configParamWithAcceptVariables: string[]) => {
+            if (typeof configObj !== 'object' || configObj === null) {
+                return
+            }
+
+            for (const [key, value] of Object.entries(configObj)) {
+                // Only resolve variables for parameters that accept them
+                // Example: requestsGetHeaders is in configParamWithAcceptVariables, so resolve "Bearer {{ $vars.TOKEN }}"
+                if (configParamWithAcceptVariables.includes(key)) {
+                    configObj[key] = await resolveNodeReference(value)
+                }
+            }
+        }
+
+        // STEP 1: Get all params with loadConfig from inputParams
+        // Example result: ["agentModel", "agentSelectedTool"]
+        const paramsWithLoadConfig = findParamsWithLoadConfig(reactFlowNodeData.inputParams)
+
+        // STEP 2-6: Process each param with loadConfig
+        for (const paramWithLoadConfig of paramsWithLoadConfig) {
+            // STEP 2: Find the value of this parameter in the inputs
+            // Example: paramWithLoadConfig="agentSelectedTool", paramValue="requestsGet"
+            const paramValue = findParamValue(paramsObj, paramWithLoadConfig)
+
+            if (paramValue && componentNodes[paramValue]) {
+                // STEP 3: Get the node instance inputs to find params with acceptVariable
+                // Example: componentNodes["requestsGet"] contains the RequestsGet node definition
+                const nodeInstance = componentNodes[paramValue]
+                const configParamWithAcceptVariables: string[] = []
+
+                // STEP 4: Find which parameters of the component accept variables
+                // Example: RequestsGet has inputs like { name: "requestsGetHeaders", acceptVariable: true }
+                if (nodeInstance.inputs && Array.isArray(nodeInstance.inputs)) {
+                    for (const input of nodeInstance.inputs) {
+                        if (input.acceptVariable === true) {
+                            configParamWithAcceptVariables.push(input.name)
+                        }
+                    }
+                }
+                // Example result: configParamWithAcceptVariables = ["requestsGetHeaders", "requestsGetUrl", ...]
+
+                // STEP 5: Look for the config object (paramName + "Config")
+                // Example: Look for "agentSelectedToolConfig" in the inputs
+                const configParamName = paramWithLoadConfig + 'Config'
+                const configValue = findParamValue(paramsObj, configParamName)
+
+                // STEP 6: Process config object to resolve variables
+                // Example: Resolve "Bearer {{ $vars.TOKEN }}" in requestsGetHeaders
+                if (configValue && configParamWithAcceptVariables.length > 0) {
+                    await processConfigParams(configValue, configParamWithAcceptVariables)
+                }
+            }
+        }
+
+        // Original logic for direct acceptVariable params (maintains backward compatibility)
+        // Example: Direct params like agentUserMessage with acceptVariable: true
         for (const key in paramsObj) {
             const paramValue = paramsObj[key]
             const isAcceptVariable = reactFlowNodeData.inputParams.find((param) => param.name === key)?.acceptVariable ?? false
@@ -605,7 +762,9 @@ async function processNodeOutputs({
     edges,
     nodeExecutionQueue,
     waitingNodes,
-    loopCounts
+    loopCounts,
+    sseStreamer,
+    chatId
 }: IProcessNodeOutputsParams): Promise<{ humanInput?: IHumanInput }> {
     logger.debug(`\n🔄 Processing outputs from node: ${nodeId}`)
 
@@ -686,6 +845,11 @@ async function processNodeOutputs({
             }
         } else {
             logger.debug(`    ⚠️ Maximum loop count (${maxLoop}) reached, stopping loop`)
+            const fallbackMessage = result.output.fallbackMessage || `Loop completed after reaching maximum iteration count of ${maxLoop}.`
+            if (sseStreamer) {
+                sseStreamer.streamTokenEvent(chatId, fallbackMessage)
+            }
+            result.output = { ...result.output, content: fallbackMessage }
         }
     }
 
@@ -830,9 +994,11 @@ const executeNode = async ({
     isInternal,
     isRecursive,
     iterationContext,
+    loopCounts,
     orgId,
     workspaceId,
-    subscriptionId
+    subscriptionId,
+    productId
 }: IExecuteNodeParams): Promise<{
     result: any
     shouldStop?: boolean
@@ -873,6 +1039,7 @@ const executeNode = async ({
         const chatHistory = [...pastChatHistory, ...runtimeChatHistory]
         const flowConfig: IFlowConfig = {
             chatflowid: chatflow.id,
+            chatflowId: chatflow.id,
             chatId,
             sessionId,
             apiMessageId,
@@ -904,8 +1071,10 @@ const executeNode = async ({
             variableOverrides,
             uploadedFilesContent,
             chatHistory,
+            componentNodes,
             agentFlowExecutedData,
-            iterationContext
+            iterationContext,
+            loopCounts
         )
 
         // Handle human input if present
@@ -955,6 +1124,7 @@ const executeNode = async ({
             chatId,
             sessionId,
             chatflowid: chatflow.id,
+            chatflowId: chatflow.id,
             apiMessageId: flowConfig.apiMessageId,
             logger,
             appDataSource,
@@ -1054,7 +1224,8 @@ const executeNode = async ({
                             },
                             orgId,
                             workspaceId,
-                            subscriptionId
+                            subscriptionId,
+                            productId
                         })
 
                         // Store the result
@@ -1281,7 +1452,8 @@ export const executeAgentFlow = async ({
     isTool = false,
     orgId,
     workspaceId,
-    subscriptionId
+    subscriptionId,
+    productId
 }: IExecuteAgentFlowParams) => {
     logger.debug('\n🚀 Starting flow execution')
 
@@ -1291,7 +1463,7 @@ export const executeAgentFlow = async ({
     const uploads = incomingInput.uploads
     const userMessageDateTime = new Date()
     const chatflowid = chatflow.id
-    const sessionId = incomingInput.sessionId ?? chatId
+    const sessionId = overrideConfig.sessionId || chatId
     const humanInput: IHumanInput | undefined = incomingInput.humanInput
 
     // Validate history schema if provided
@@ -1394,6 +1566,29 @@ export const executeAgentFlow = async ({
                     previousState = execData.data.state
                     break
                 }
+            }
+        }
+
+        // Check if startState has been overridden from overrideConfig.startState and is enabled
+        const startAgentflowNode = nodes.find((node) => node.data.name === 'startAgentflow')
+        const isStartStateEnabled =
+            nodeOverrides && startAgentflowNode
+                ? nodeOverrides[startAgentflowNode.data.label]?.find((param: any) => param.name === 'startState')?.enabled ?? false
+                : false
+
+        if (isStartStateEnabled && overrideConfig?.startState) {
+            if (Array.isArray(overrideConfig.startState)) {
+                // Handle array format: [{"key": "foo", "value": "foo4"}]
+                const overrideStateObj: ICommonObject = {}
+                for (const item of overrideConfig.startState) {
+                    if (item.key && item.value !== undefined) {
+                        overrideStateObj[item.key] = item.value
+                    }
+                }
+                previousState = { ...previousState, ...overrideStateObj }
+            } else if (typeof overrideConfig.startState === 'object') {
+                // Object override: "startState": {...}
+                previousState = { ...previousState, ...overrideConfig.startState }
             }
         }
 
@@ -1565,7 +1760,7 @@ export const executeAgentFlow = async ({
         .find({
             where: {
                 chatflowid,
-                chatId
+                sessionId
             },
             order: {
                 createdDate: 'ASC'
@@ -1578,12 +1773,44 @@ export const executeAgentFlow = async ({
                     role: message.role === 'userMessage' ? 'user' : 'assistant'
                 }
 
-                // Only add additional_kwargs when fileUploads or artifacts exists and is not empty
-                if ((message.fileUploads && message.fileUploads !== '') || (message.artifacts && message.artifacts !== '')) {
+                const hasFileUploads = message.fileUploads && message.fileUploads !== ''
+                const hasArtifacts = message.artifacts && message.artifacts !== ''
+                const hasFileAnnotations = message.fileAnnotations && message.fileAnnotations !== ''
+                const hasUsedTools = message.usedTools && message.usedTools !== ''
+
+                if (hasFileUploads || hasArtifacts || hasFileAnnotations || hasUsedTools) {
                     mappedMessage.additional_kwargs = {}
 
-                    if (message.fileUploads && message.fileUploads !== '') {
-                        mappedMessage.additional_kwargs.fileUploads = message.fileUploads
+                    if (hasFileUploads) {
+                        try {
+                            mappedMessage.additional_kwargs.fileUploads = JSON.parse(message.fileUploads!)
+                        } catch {
+                            mappedMessage.additional_kwargs.fileUploads = message.fileUploads
+                        }
+                    }
+
+                    if (hasArtifacts) {
+                        try {
+                            mappedMessage.additional_kwargs.artifacts = JSON.parse(message.artifacts!)
+                        } catch {
+                            mappedMessage.additional_kwargs.artifacts = message.artifacts
+                        }
+                    }
+
+                    if (hasFileAnnotations) {
+                        try {
+                            mappedMessage.additional_kwargs.fileAnnotations = JSON.parse(message.fileAnnotations!)
+                        } catch {
+                            mappedMessage.additional_kwargs.fileAnnotations = message.fileAnnotations
+                        }
+                    }
+
+                    if (hasUsedTools) {
+                        try {
+                            mappedMessage.additional_kwargs.usedTools = JSON.parse(message.usedTools!)
+                        } catch {
+                            mappedMessage.additional_kwargs.usedTools = message.usedTools
+                        }
                     }
                 }
 
@@ -1691,9 +1918,11 @@ export const executeAgentFlow = async ({
                 analyticHandlers,
                 isRecursive,
                 iterationContext,
+                loopCounts,
                 orgId,
                 workspaceId,
-                subscriptionId
+                subscriptionId,
+                productId
             })
 
             if (executionResult.agentFlowExecutedData) {
@@ -1758,7 +1987,8 @@ export const executeAgentFlow = async ({
                 nodeExecutionQueue,
                 waitingNodes,
                 loopCounts,
-                abortController
+                sseStreamer,
+                chatId
             })
 
             // Update humanInput if it was changed
@@ -1959,7 +2189,9 @@ export const executeAgentFlow = async ({
             chatflowId: chatflowid,
             chatId,
             type: evaluationRunId ? ChatType.EVALUATION : isInternal ? ChatType.INTERNAL : ChatType.EXTERNAL,
-            flowGraph: getTelemetryFlowObj(nodes, edges)
+            flowGraph: getTelemetryFlowObj(nodes, edges),
+            productId,
+            subscriptionId
         },
         orgId
     )
@@ -1976,6 +2208,28 @@ export const executeAgentFlow = async ({
     result.agentFlowExecutedData = agentFlowExecutedData
 
     if (sessionId) result.sessionId = sessionId
+
+    if (shouldAutoPlayTTS(chatflow.textToSpeech) && result.text) {
+        const options = {
+            orgId,
+            chatflowid,
+            chatId,
+            appDataSource,
+            databaseEntities
+        }
+
+        if (sseStreamer) {
+            await generateTTSForResponseStream(
+                result.text,
+                chatflow.textToSpeech,
+                options,
+                chatId,
+                chatMessage?.id,
+                sseStreamer,
+                abortController
+            )
+        }
+    }
 
     return result
 }
